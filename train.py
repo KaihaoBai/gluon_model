@@ -68,21 +68,25 @@ if __name__ == '__main__':
         embed.initialize(mx.init.Uniform(), ctx=[mx.cpu()])
         embeddings.append(embed)
     net = ConcatNet(embeddings)
+
     weight_dims = CRITEO_FIELD_NUM * 80
+    cross_layers = 3
+
     net1 = DeepNet()
     ctx=[mx.gpu(i) for i in range(gpu_num)]
-    ctx1 = ctx + [mx.cpu()]
-    net1.initialize(mx.init.Uniform(), ctx=ctx1)
-    weight = nd.random.uniform(shape=(1, weight_dims), ctx=mx.gpu(0))
-    bias = nd.random.uniform(shape=(weight_dims), ctx=mx.gpu(0))
-    net2 = CrossNet(weight_dims, weight, bias)
-    net2.initialize(ctx=ctx1)
+    net1.initialize(mx.init.Uniform(), ctx=ctx)
+   
+    net2 = CrossNet(weight_dims, cross_layers)
+    net2.initialize(ctx=[mx.cpu()])
+
     dense = nn.Dense(2, activation = 'relu')
-    dense.initialize(ctx=ctx1)
-    net3 = CrossDeepNet(net1, net2, dense)
+    dense.initialize(ctx=ctx)
+    net3 = CrossDeepNet(net1, dense)
+
     optim = mx.optimizer.create('adam', learning_rate=lr, rescale_grad=1.0/batch_size, lazy_update=False)
     kvstore1 = mx.kvstore.create('device')
     kvstore2 = mx.kvstore.create('device')
+
     trainer1 = gluon.Trainer(net.collect_params(), optim, kvstore=kvstore1)
     trainer2 = gluon.Trainer(net3.collect_params(), optim, kvstore=kvstore2)
     #acc = mx.metric.Accuracy()
@@ -98,10 +102,11 @@ if __name__ == '__main__':
             Ls = []
             with mx.autograd.record():
                 x = net(data[0])
+                cross = net2(x)
                 x = gluon.utils.split_and_load(x, ctx_list=ctx)
-                
-                for x1, y1 in zip(x, label):
-                    Ls = [loss(net3(x1), y1)]
+                cross = gluon.utils.split_and_load(cross, ctx_list=ctx)
+                for x1, y1, z1 in zip(x, label, cross):
+                    Ls = [loss(net3(x1, z1), y1)]
                 for l in Ls:
                     l.backward()
 

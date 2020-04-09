@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-
+import mxnet as mx
 from mxnet import gluon, nd
 from mxnet.gluon import nn, Block, HybridBlock
 import numpy as np
@@ -32,12 +32,21 @@ class ConcatNet(HybridBlock):
         return F.concat(*[nd.op.squeeze(self.net[i](y[i]), axis=1) for i, x1 in enumerate(y)], dim=1)
 
 class CrossNet(HybridBlock):
-    def __init__(self,weight_dims,weight,bias,**kwargs):
+    def __init__(self,weight_dims,cross_layers,**kwargs):
         super(CrossNet,self).__init__(**kwargs)
-        self.weight = weight
-        self.bias = bias
+        self.weight = []
+        self.bias = []
+        self.cross_layers = cross_layers
+        for i in range(cross_layers):
+            weight = nd.random.uniform(shape=(1, weight_dims))
+            bias = nd.random.uniform(shape=(weight_dims))
+            self.weight.append(weight)
+            self.bias.append(bias)
     def hybrid_forward(self,F,x):
-        return F.broadcast_add(F.broadcast_mul(x, self.weight), self.bias)
+        self.cross_outputs = x
+        for i in range(self.cross_layers):
+            self.cross_outputs = F.broadcast_add(F.broadcast_mul(self.cross_outputs, self.weight[i]), self.bias[i])
+        return self.cross_outputs
 
 class DeepNet(HybridBlock):
     def __init__(self,**kwargs):
@@ -50,10 +59,10 @@ class DeepNet(HybridBlock):
         return self.dense3(self.dense2(self.dense1(self.dense0(x))))
 
 class CrossDeepNet(HybridBlock):
-    def __init__(self, cross, deep, dense,**kwargs):
+    def __init__(self,deep,dense,**kwargs):
         super(CrossDeepNet,self).__init__(**kwargs)
-        self.cross = cross
+        #self.cross = cross
         self.deep = deep
         self.dense = dense
-    def hybrid_forward(self,F,x):
-        return self.dense(F.concat(*[self.cross(x), self.deep(x)], dim=1))
+    def hybrid_forward(self,F,x1,x2):
+        return self.dense(F.concat(*[self.deep(x1), x2], dim=1))
