@@ -29,15 +29,15 @@ class ConcatNet(HybridBlock):
             self.register_child(net, 'embedding' + str(i))
     def hybrid_forward(self,F,x):
         y = nd.op.split(x, axis=1, num_outputs=39)
-        return F.concat(*[self.net[i](y[i]) for i, x1 in enumerate(y)], dim=1)
+        return F.concat(*[nd.op.squeeze(self.net[i](y[i]), axis=1) for i, x1 in enumerate(y)], dim=1)
 
 class CrossNet(HybridBlock):
-    def __init__(self,weight_dims,**kwargs):
+    def __init__(self,weight_dims,weight,bias,**kwargs):
         super(CrossNet,self).__init__(**kwargs)
-        self.weight = nd.random.uniform(shape=(weight_dims,))
-        self.bias = nd.random.uniform(shape=(weight_dims,))
+        self.weight = weight
+        self.bias = bias
     def hybrid_forward(self,F,x):
-        return F.broadcast_add(x, self.weight)
+        return F.broadcast_add(F.broadcast_mul(x, self.weight), self.bias)
 
 class DeepNet(HybridBlock):
     def __init__(self,**kwargs):
@@ -46,16 +46,14 @@ class DeepNet(HybridBlock):
         self.dense1 = nn.Dense(512, activation='relu')
         self.dense2 = nn.Dense(256, activation='relu')
         self.dense3 = nn.Dense(126, activation='relu')
-        self.dense4 = nn.Dense(2)
     def hybrid_forward(self,F,x):
-        return self.dense4(self.dense3(self.dense2(self.dense1(self.dense0(x)))))
+        return self.dense3(self.dense2(self.dense1(self.dense0(x))))
 
 class CrossDeepNet(HybridBlock):
-    def __init__(self, concat, deep,**kwargs):
+    def __init__(self, cross, deep, dense,**kwargs):
         super(CrossDeepNet,self).__init__(**kwargs)
-        self.concat = concat
+        self.cross = cross
         self.deep = deep
+        self.dense = dense
     def hybrid_forward(self,F,x):
-        y = self.concat(x)
-        return self.deep(y)
-
+        return self.dense(F.concat(*[self.cross(x), self.deep(x)], dim=1))

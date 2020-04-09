@@ -24,22 +24,28 @@ import time
 from config import *
 
 import numpy as np
-
+import time
 import mxnet as mx
-#from data import csv_iterator
+import pdb
 from mxnet import gluon
 from mxnet.gluon.model_zoo import vision as models
 from mxnet import autograd as ag, nd
 from model import *
+import logging
 
 parser = argparse.ArgumentParser(description='train dcn')
-parser.add_argument('--num-epoch', type=int, default=2)
-parser.add_argument('--batch-size', type=int, default=2048)
+parser.add_argument('--num-epoch', type=int, default=2,
+                    help='number of epochs to train')
+parser.add_argument('--batch-size', type=int, default=2048,
+                    help='number of examples per batch')
 parser.add_argument('--lr', type=float, default=0.001)
 parser.add_argument('--gpu-num', type=int, default=1)
-parser.add_argument('--optimizer', type=str, default='adam')
+parser.add_argument('--optimizer', type=str, default='adam',
+                    help='what optimizer to use',
+                    choices=["ftrl", "sgd", "adam"])
 
-if __name__ == '__main__':    
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)    
     args = parser.parse_args()
     logging.info(args)
     num_epoch = args.num_epoch
@@ -65,38 +71,44 @@ if __name__ == '__main__':
     weight_dims = CRITEO_FIELD_NUM * 80
     net1 = DeepNet()
     ctx=[mx.gpu(i) for i in range(gpu_num)]
-    ctx.append(mx.cpu())
-    net1.initialize(mx.init.Uniform(), ctx=ctx)
-    net2 = CrossNet(weight_dims)
-    optim = mx.optimizer.create(optimizer, learning_rate=lr, rescale_grad=1.0/batch_size, lazy_update=False)
+    ctx1 = ctx + [mx.cpu()]
+    net1.initialize(mx.init.Uniform(), ctx=ctx1)
+    weight = nd.random.uniform(shape=(1, weight_dims), ctx=mx.gpu(0))
+    bias = nd.random.uniform(shape=(weight_dims), ctx=mx.gpu(0))
+    net2 = CrossNet(weight_dims, weight, bias)
+    net2.initialize(ctx=ctx1)
+    dense = nn.Dense(2, activation = 'relu')
+    dense.initialize(ctx=ctx1)
+    net3 = CrossDeepNet(net1, net2, dense)
+    optim = mx.optimizer.create('adam', learning_rate=lr, rescale_grad=1.0/batch_size, lazy_update=False)
     kvstore1 = mx.kvstore.create('device')
     kvstore2 = mx.kvstore.create('device')
     trainer1 = gluon.Trainer(net.collect_params(), optim, kvstore=kvstore1)
-    trainer2 = gluon.Trainer(net1.collect_params(), optim, kvstore=kvstore2)
-    acc = mx.metric.Accuracy()
+    trainer2 = gluon.Trainer(net3.collect_params(), optim, kvstore=kvstore2)
+    #acc = mx.metric.Accuracy()
     for epoch in range(num_epoch):
         batch = train_data.next()
+        nbatch = 0
         while (batch != ''):
+            start = time.time()
+            nbatch += 1
             data = gluon.utils.split_and_load(batch.data[0], ctx_list=[mx.cpu()], batch_axis=0)
-            label = batch.label[0]
-            label = nd.array(label)
+            label = gluon.utils.split_and_load(batch.label[0], ctx_list=ctx, batch_axis=-1)
+            
             Ls = []
             with mx.autograd.record():
-                for gpu_id in range(gpu_num):
-                    for x, _ in zip(data, label):
-                        x = net(x)
-                    
-                        x = x.copyto(mx.gpu(gpu_id))
-                        y = net1(x)
-                        label = label.copyto(mx.gpu(gpu_id))
-                        with mx.autograd.pause():
-                            acc.update([label], [y])
-                        l = loss(y, label)
-                        Ls.append(l)
-                print (acc.get())
+                x = net(data[0])
+                x = gluon.utils.split_and_load(x, ctx_list=ctx)
+                
+                for x1, y1 in zip(x, label):
+                    Ls = [loss(net3(x1), y1)]
                 for l in Ls:
                     l.backward()
+
             trainer1.step(batch.data[0].shape[0])
             trainer2.step(batch.data[0].shape[0], ignore_stale_grad=True)
             batch = train_data.next()
             
+            elapsed = time.time() - start
+            logging.info("Epoch [%d]: %f samples / sec"%(epoch, batch_size / elapsed ))
+         
